@@ -18,12 +18,16 @@ From the `deployment` folder:
 ```bash
 cd deployment
 docker compose up --build -d
+chmod +x test-deployment.sh
+./test-deployment.sh
 ```
 
 Open:
 
 - Frontend: `http://localhost:8080`
 - Backend health: `http://localhost:3000/api/health`
+
+Do not open `/api/auth/login` in the browser address bar. That is a POST-only API endpoint. Open the frontend URL and use the login form.
 
 The backend runs migrations and seed data on startup.
 

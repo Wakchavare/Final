@@ -32,6 +32,15 @@ app.get("/api/health", async (_req, res) => {
   }
 });
 
+app.get("/api/auth/login", (_req, res) => {
+  res.status(405).json({
+    error: "Login API requires POST.",
+    method: "POST",
+    path: "/api/auth/login",
+    loginPage: "/"
+  });
+});
+
 app.post("/api/auth/login", async (req, res, next) => {
   try {
     const email = normalizeEmail(req.body.email || req.body.username);

@@ -23,6 +23,9 @@
     if (response.status === 204) return null;
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
+      if (response.status === 401) {
+        setToken("");
+      }
       const error = new Error(data.error || data.message || `Request failed: ${response.status}`);
       error.status = response.status;
       error.code = data.code;
