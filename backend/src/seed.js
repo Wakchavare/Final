@@ -1,4 +1,4 @@
-require("dotenv").config();
+require("./env").loadEnv();
 const bcrypt = require("bcryptjs");
 const { allPermissions, defaultRoles } = require("./permissions");
 const { query, transaction } = require("./db");

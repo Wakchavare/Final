@@ -4,7 +4,7 @@
   "private": true,
   "description": "Casting Production Management with Express APIs and PostgreSQL.",
   "scripts": {
-    "build": "node --check src/server.js && node --check src/seed.js && node --check src/reset-db.js",
+    "build": "node --check src/env.js && node --check src/server.js && node --check src/seed.js && node --check src/reset-db.js",
     "start": "node src/server.js",
     "dev": "node src/server.js",
     "migrate": "node src/migrate.js",

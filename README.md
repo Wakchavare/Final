@@ -36,7 +36,7 @@ Current temporary values:
 ```env
 DATABASE_URL=postgres://casting_user:casting_password@postgres:5432/casting_production
 JWT_SECRET=temp-change-later-unique-designs-casting-2026-05-24-9b7d4c2f6a8e5d1c
-CORS_ORIGIN=http://localhost:8080,http://localhost:3000,http://uniquedesignscasting.com,https://uniquedesignscasting.com
+CORS_ORIGIN=http://localhost:8080,http://localhost:3000,http://uniquedesignscasting.com,https://uniquedesignscasting.com,http://www.uniquedesignscasting.com,https://www.uniquedesignscasting.com
 ```
 
 Change `JWT_SECRET`, `POSTGRES_PASSWORD`, and `DATABASE_URL` before permanent production use.
@@ -47,6 +47,7 @@ From the `backend` folder, with a PostgreSQL database available:
 
 ```bash
 npm install
+cp .env.example .env
 npm run migrate
 npm run seed
 npm run reset-db

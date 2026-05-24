@@ -1,6 +1,9 @@
 const fs = require("fs");
 const path = require("path");
 const { Pool } = require("pg");
+const { loadEnv } = require("./env");
+
+loadEnv();
 
 const connectionString =
   process.env.DATABASE_URL || "postgres://casting_user:casting_password@localhost:5432/casting_production";
