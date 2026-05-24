@@ -1,0 +1,1 @@
+-- Seed data is inserted by backend/src/seed.js so passwords can be hashed safely.

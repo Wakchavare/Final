@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#12756f">
+    <title>Unique Designs Casting</title>
+    <link rel="icon" type="image/png" href="./assets/logo.png">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Libre+Barcode+39&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+    <script>
+      window.productionTailwindConfig = {
+        corePlugins: {
+          preflight: false
+        },
+        theme: {
+          extend: {
+            colors: {
+              production: {
+                ink: "#1f2a2a",
+                muted: "#68736d",
+                line: "#d8ded9",
+                teal: "#12756f",
+                soft: "#eef5f3"
+              }
+            }
+          }
+        }
+      };
+      window.tailwind = window.tailwind || {};
+      window.tailwind.config = window.productionTailwindConfig;
+    </script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      if (window.tailwind) {
+        window.tailwind.config = window.productionTailwindConfig;
+      }
+    </script>
+  </head>
+  <body>
+    <section class="login-shell" id="loginRoot" aria-label="Login"></section>
+
+    <main class="app-shell" id="appShell" hidden>
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Production Management</p>
+          <h1>Production Management System</h1>
+        </div>
+        <div class="auth-controls" aria-label="Current user">
+          <span id="liveSyncStatus" class="live-sync-status" aria-live="polite">Live sync offline</span>
+          <span id="authUserName" class="auth-user-name"></span>
+          <button class="button button-secondary" type="button" id="logoutButton">Logout</button>
+        </div>
+        <div class="toolbar" data-visible-module="waxEntriesModule" aria-label="Wax Entries actions">
+          <button class="button button-secondary" type="button" id="exportCsvButton" title="Export CSV">
+            Export CSV
+          </button>
+        </div>
+      </header>
+
+      <nav class="module-tabs" aria-label="Software modules">
+        <button class="module-tab is-active" type="button" data-module-target="waxEntriesModule" aria-selected="true">Wax Entries</button>
+        <button class="module-tab" type="button" data-module-target="secondModule" aria-selected="false">Casting Process</button>
+        <button class="module-tab" type="button" data-module-target="metalReceivingModule" aria-selected="false">Metal Receiving</button>
+        <button class="module-tab" type="button" data-module-target="inventoryModule" aria-selected="false">Inventory</button>
+        <button class="module-tab" type="button" data-module-target="invoicingModule" aria-selected="false">Invoicing</button>
+        <button class="module-tab" type="button" data-module-target="roleManagementModule" aria-selected="false">Role Management</button>
+        <button class="module-tab" type="button" data-module-target="userManagementModule" aria-selected="false">User Management</button>
+        <button class="module-tab" type="button" data-module-target="auditLogsModule" aria-selected="false">Audit Logs</button>
+      </nav>
+
+      <section class="module-panel workspace" id="waxEntriesModule" data-module-panel aria-label="Wax production entry workspace">
+        <section class="entry-panel" aria-labelledby="entriesTitle">
+          <div class="section-heading">
+            <div>
+              <h2 id="entriesTitle">Entries</h2>
+              <p id="saveStatus" aria-live="polite">Saved</p>
+            </div>
+            <span id="rowCount" class="counter">0 rows</span>
+          </div>
+
+          <div class="table-scroll">
+            <table class="entry-table">
+              <thead>
+                <tr>
+                  <th scope="col">Vendor / Customer Name</th>
+                  <th scope="col">Date</th>
+                  <th scope="col">Wax Invoice No.</th>
+                  <th scope="col">Customer / Vendor Tree No.</th>
+                  <th scope="col">Metal KT</th>
+                  <th scope="col">Color</th>
+                  <th scope="col">Wax Weight</th>
+                  <th scope="col">Internal Tree Number</th>
+                  <th scope="col" class="action-heading">Action</th>
+                </tr>
+                <tr class="filter-row">
+                  <th scope="col" data-label="Vendor / Customer Name">
+                    <input type="search" id="vendorCustomerNameFilter" placeholder="Search name" aria-label="Filter vendor or customer name" autocomplete="off">
+                  </th>
+                  <th scope="col" data-label="Date">
+                    <input type="search" id="dateFilter" placeholder="Search date" aria-label="Filter date" autocomplete="off">
+                  </th>
+                  <th scope="col" data-label="Wax Invoice No.">
+                    <input type="search" id="waxInvoiceNoFilter" placeholder="Search invoice" aria-label="Filter wax invoice number" autocomplete="off">
+                  </th>
+                  <th scope="col" data-label="Customer / Vendor Tree No.">
+                    <input type="search" id="customerVendorTreeNoFilter" placeholder="Search tree no." aria-label="Filter customer or vendor tree number" autocomplete="off">
+                  </th>
+                  <th scope="col" data-label="Metal KT">
+                    <input type="search" id="metalKtFilter" placeholder="Search metal" aria-label="Filter metal KT" autocomplete="off">
+                  </th>
+                  <th scope="col" data-label="Color">
+                    <input type="search" id="colorFilter" placeholder="Search color" aria-label="Filter color" autocomplete="off">
+                  </th>
+                  <th scope="col" data-label="Wax Weight">
+                    <input type="search" id="waxWeightFilter" placeholder="Search weight" aria-label="Filter wax weight" autocomplete="off">
+                  </th>
+                  <th scope="col" data-label="Internal Tree Number">
+                    <input type="search" id="internalTreeNumberFilter" placeholder="Search internal tree" aria-label="Filter internal tree number" autocomplete="off">
+                  </th>
+                  <th scope="col" class="action-heading" data-label="Action">
+                    <button class="clear-filter-button" type="button" id="clearFiltersButton" title="Clear filters">Clear</button>
+                  </th>
+                </tr>
+              </thead>
+              <tbody class="input-body">
+                <tr class="entry-form-row">
+                  <td class="name-cell" data-label="Vendor / Customer Name">
+                    <div class="copy-input-group">
+                      <input type="text" id="vendorCustomerNameInput" list="vendorCustomerNameSuggestions" aria-label="Vendor or customer name">
+                      <button class="copy-last-button" type="button" id="copyLastVendorButton" title="Copy last vendor/customer name" aria-label="Copy last vendor or customer name">Last</button>
+                    </div>
+                  </td>
+                  <td class="date-cell" data-label="Date">
+                    <div class="date-input-group">
+                      <input type="date" id="dateInput" aria-label="Date">
+                      <button class="today-button" type="button" id="todayDateButton" title="Use today's date" aria-label="Use today's date">T</button>
+                    </div>
+                  </td>
+                  <td class="invoice-cell" data-label="Wax Invoice No.">
+                    <div class="copy-input-group">
+                      <input type="text" id="waxInvoiceNoInput" list="waxInvoiceNoSuggestions" aria-label="Wax invoice number">
+                      <button class="copy-last-button" type="button" id="copyLastInvoiceButton" title="Copy last wax invoice number" aria-label="Copy last wax invoice number">Last</button>
+                    </div>
+                  </td>
+                  <td class="tree-cell" data-label="Customer / Vendor Tree No.">
+                    <input type="text" id="customerVendorTreeNoInput" aria-label="Customer or vendor tree number">
+                  </td>
+                  <td class="metal-cell" data-label="Metal KT">
+                    <select id="metalKtInput" aria-label="Metal KT"></select>
+                  </td>
+                  <td class="color-cell" data-label="Color">
+                    <select id="colorInput" aria-label="Color"></select>
+                  </td>
+                  <td class="wax-weight-cell" data-label="Wax Weight">
+                    <input type="number" min="0" step="0.001" id="waxWeightInput" aria-label="Wax weight">
+                  </td>
+                  <td class="tree-cell" data-label="Internal Tree Number">
+                    <input type="text" id="internalTreeNumberInput" placeholder="Generated after submit" aria-label="Generated internal tree number" readonly disabled>
+                  </td>
+                  <td class="action-cell" data-label="Action">
+                    <div class="row-actions input-row-actions">
+                      <label class="in-house-checkbox-label">
+                        <input type="checkbox" id="inHouseProductionInput" aria-label="In-House Production">
+                        <span>In-House Prod</span>
+                      </label>
+                      <button class="submit-button" type="button" id="submitEntryButton" title="Submit entry" aria-label="Submit entry">&#10003;</button>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+              <tbody id="entryRows"></tbody>
+            </table>
+          </div>
+        </section>
+
+      </section>
+
+      <section class="module-panel kanban-module" id="secondModule" data-module-panel hidden aria-label="Order processing workflow">
+        <div id="kanbanRoot"></div>
+      </section>
+
+      <section class="module-panel metal-receiving-module" id="metalReceivingModule" data-module-panel hidden aria-label="Metal receiving workspace">
+        <div id="metalReceivingRoot"></div>
+      </section>
+
+      <section class="module-panel inventory-module" id="inventoryModule" data-module-panel hidden aria-label="Inventory workspace">
+        <div id="inventoryRoot"></div>
+      </section>
+
+      <section class="module-panel invoicing-module" id="invoicingModule" data-module-panel hidden aria-label="Invoicing workspace">
+        <div id="invoicingRoot"></div>
+      </section>
+
+      <section class="module-panel role-management-module" id="roleManagementModule" data-module-panel hidden aria-label="Role management workspace">
+        <div id="roleManagementRoot"></div>
+      </section>
+
+      <section class="module-panel user-management-module" id="userManagementModule" data-module-panel hidden aria-label="User management workspace">
+        <div id="userManagementRoot"></div>
+      </section>
+
+      <section class="module-panel audit-logs-module" id="auditLogsModule" data-module-panel hidden aria-label="Audit logs workspace">
+        <div id="auditLogsRoot"></div>
+      </section>
+    </main>
+
+    <datalist id="vendorCustomerNameSuggestions"></datalist>
+    <datalist id="waxInvoiceNoSuggestions"></datalist>
+
+    <div id="printArea" class="print-area" aria-hidden="true"></div>
+
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="apiClient.js"></script>
+    <script src="rbac.js"></script>
+    <script src="auth.js"></script>
+    <script src="inventory.js"></script>
+    <script src="invoicing.js"></script>
+    <script src="app.js"></script>
+    <script src="kanban.js"></script>
+  </body>
+</html>
