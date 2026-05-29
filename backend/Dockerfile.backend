@@ -4,5 +4,6 @@ COPY package*.json ./
 RUN npm install --omit=dev
 COPY src ./src
 COPY db ./db
+COPY templates ./templates
 EXPOSE 3000
 CMD ["npm", "start"]

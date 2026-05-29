@@ -196,12 +196,24 @@ create table if not exists invoice_orders (
   order_number integer not null default nextval('invoice_order_number_seq') unique,
   company_id uuid not null references invoice_companies(id) on delete cascade,
   wax_shipment_inv_no text not null unique,
+  original_order_number text,
+  upload_version integer not null default 1,
+  invoice_no text,
   date_of_order date,
   so_no text,
+  metal_type text,
+  wax_weight numeric(12,3),
+  casting_weight numeric(12,3),
+  labor_charge numeric(12,2),
+  setting_charge numeric(12,2),
+  stone_charge numeric(12,2),
+  extra_charge numeric(12,2),
   gold_value numeric(12,2),
   silver_value numeric(12,2),
   platinum_value numeric(12,2),
   status text not null default 'Draft',
+  source_file_name text,
+  source_file_path text,
   uploaded_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   created_by uuid references users(id) on delete set null
@@ -226,8 +238,13 @@ create table if not exists invoice_order_rows (
   total_wt numeric(12,3),
   required_metal_pg numeric(12,3),
   total_value numeric(12,2),
+  wax_weight numeric(12,3),
   casting_qty numeric(12,3),
   casting_weight numeric(12,3),
+  labor_charge numeric(12,2),
+  setting_charge numeric(12,2),
+  stone_charge numeric(12,2),
+  extra_charge numeric(12,2),
   notes text,
   image_url text,
   created_at timestamptz not null default now()
@@ -243,16 +260,46 @@ create table if not exists generated_invoices (
   gold_spot numeric(12,2),
   platinum_spot numeric(12,2),
   silver_spot numeric(12,2),
+  file_type text not null default 'invoice',
+  file_path text,
   generated_at timestamptz not null default now(),
+  created_at timestamptz not null default now(),
+  generated_by uuid references users(id) on delete set null,
   created_by uuid references users(id) on delete set null
 );
+
+alter table invoice_orders add column if not exists original_order_number text;
+alter table invoice_orders add column if not exists upload_version integer not null default 1;
+alter table invoice_orders add column if not exists invoice_no text;
+alter table invoice_orders add column if not exists metal_type text;
+alter table invoice_orders add column if not exists wax_weight numeric(12,3);
+alter table invoice_orders add column if not exists casting_weight numeric(12,3);
+alter table invoice_orders add column if not exists labor_charge numeric(12,2);
+alter table invoice_orders add column if not exists setting_charge numeric(12,2);
+alter table invoice_orders add column if not exists stone_charge numeric(12,2);
+alter table invoice_orders add column if not exists extra_charge numeric(12,2);
+alter table invoice_orders add column if not exists source_file_name text;
+alter table invoice_orders add column if not exists source_file_path text;
+
+alter table invoice_order_rows add column if not exists wax_weight numeric(12,3);
+alter table invoice_order_rows add column if not exists labor_charge numeric(12,2);
+alter table invoice_order_rows add column if not exists setting_charge numeric(12,2);
+alter table invoice_order_rows add column if not exists stone_charge numeric(12,2);
+alter table invoice_order_rows add column if not exists extra_charge numeric(12,2);
+
+alter table generated_invoices add column if not exists file_type text not null default 'invoice';
+alter table generated_invoices add column if not exists file_path text;
+alter table generated_invoices add column if not exists created_at timestamptz not null default now();
+alter table generated_invoices add column if not exists generated_by uuid references users(id) on delete set null;
 
 create index if not exists idx_wax_entries_created_at on wax_entries(created_at desc);
 create index if not exists idx_casting_orders_stage on casting_orders(current_stage);
 create index if not exists idx_audit_logs_created_at on audit_logs(created_at desc);
 create index if not exists idx_invoice_orders_company_id on invoice_orders(company_id);
 create index if not exists idx_invoice_orders_uploaded_at on invoice_orders(uploaded_at desc);
+create index if not exists idx_invoice_orders_original_order_number on invoice_orders(original_order_number);
 create index if not exists idx_invoice_order_rows_order_id on invoice_order_rows(order_id);
 create index if not exists idx_invoice_order_rows_tree_no on invoice_order_rows(tree_no);
 create index if not exists idx_invoice_order_rows_sku on invoice_order_rows(sku);
 create index if not exists idx_generated_invoices_order_id on generated_invoices(order_id);
+create index if not exists idx_generated_invoices_file_type on generated_invoices(order_id, file_type, created_at desc);

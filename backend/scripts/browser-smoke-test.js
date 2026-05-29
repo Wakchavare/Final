@@ -140,13 +140,25 @@ async function main() {
     await fill("[data-line-field='orderQty']", "2");
     await fill("[data-line-field='totalWt']", "4.800");
     await click("[data-invoice-order-form] button[type='submit']");
-    await waitForText("SO-BROWSER-READY", "invoice order saved");
-    const invoiceOrders = await pageFetch("/api/invoicing/orders");
-    const smokeOrder = invoiceOrders.find((order) => order.waxShipmentInvNo === orderShipment);
+    let smokeOrder = null;
+    const orderStarted = Date.now();
+    while (!smokeOrder && Date.now() - orderStarted < 15000) {
+      const invoiceOrders = await pageFetch("/api/invoicing/orders");
+      smokeOrder = invoiceOrders.find((order) => order.waxShipmentInvNo === orderShipment) || null;
+      if (!smokeOrder) await new Promise((resolve) => setTimeout(resolve, 250));
+    }
     assert(smokeOrder, "invoice order exists in backend");
     await pageFetch(`/api/invoicing/orders/${smokeOrder.id}/generate`, {
       method: "POST",
-      body: { invoiceNo: `INV-BROWSER-${Date.now()}`, invoiceDate: "2026-05-22", metalType: "Gold", laborRate: "19.75" }
+      body: {
+        invoiceNo: `INV-BROWSER-${Date.now()}`,
+        invoiceDate: "2026-05-22",
+        metalType: "Gold",
+        laborRate: "19.75",
+        goldSpot: "2340.00",
+        platinumSpot: "980.00",
+        silverSpot: "30.00"
+      }
     });
     const orderDetail = await pageFetch(`/api/invoicing/orders/${smokeOrder.id}`);
     assert(orderDetail.generatedInvoices.length > 0, "generated invoice exists");

@@ -1,6 +1,7 @@
 require("./env").loadEnv();
 
 const fs = require("fs");
+const fsp = require("fs/promises");
 const path = require("path");
 const bcrypt = require("bcryptjs");
 const cors = require("cors");
@@ -11,16 +12,19 @@ const morgan = require("morgan");
 const { migrate } = require("./migrate");
 const { seed } = require("./seed");
 const { pool, query, transaction } = require("./db");
+const { generateInvoiceWorkbook, generateOrderCopyWorkbook, generateShippingWorkbook, workbookFileName } = require("./excel-generator");
+const { parseInvoiceOrderWorkbook } = require("./order-parser");
 
 const app = express();
 const port = Number(process.env.PORT || 3000);
 const jwtSecret = process.env.JWT_SECRET || "development-secret-change-me";
 const jwtExpiresIn = process.env.JWT_EXPIRES_IN || "8h";
 const publicRoot = process.env.PUBLIC_ROOT || path.resolve(__dirname, "..", "public");
+const invoiceFileRoot = process.env.INVOICE_FILE_ROOT || path.resolve(__dirname, "..", "generated", "invoicing");
 
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(cors({ origin: getCorsOrigin(), credentials: true }));
-app.use(express.json({ limit: "2mb" }));
+app.use(express.json({ limit: "25mb" }));
 app.use(morgan(process.env.NODE_ENV === "test" ? "tiny" : "dev"));
 
 app.get("/api/health", async (_req, res) => {
@@ -312,6 +316,14 @@ app.put("/api/invoicing/companies/:id", authRequired, async (req, res, next) => 
   }
 });
 
+app.get("/api/invoicing/search", authRequired, async (req, res, next) => {
+  try {
+    res.json(await searchInvoicing(req.query.q));
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get("/api/invoicing/orders", authRequired, async (_req, res, next) => {
   try {
     const result = await query(`select o.*, c.name as company_name
@@ -334,11 +346,93 @@ app.post("/api/invoicing/orders", authRequired, async (req, res, next) => {
   }
 });
 
+app.post("/api/invoicing/orders/upload", authRequired, async (req, res, next) => {
+  try {
+    const fileName = String(req.body.fileName || "invoice-order.xlsx").trim();
+    if (path.extname(fileName).toLowerCase() !== ".xlsx") {
+      return res.status(400).json({ error: "Only .xlsx Excel files are supported for invoice uploads." });
+    }
+    const fileBase64 = String(req.body.fileBase64 || "").replace(/^data:.*?;base64,/i, "");
+    if (!fileBase64) {
+      return res.status(400).json({ error: "fileBase64 is required." });
+    }
+
+    const workbook = Buffer.from(fileBase64, "base64");
+    const parsed = await parseInvoiceOrderWorkbook(workbook, fileName);
+    const company = await saveInvoiceCompany({ name: parsed.companyName });
+    const duplicate = await query(
+      "select id, company_id, upload_version from invoice_orders where wax_shipment_inv_no=$1 order by upload_version desc limit 1",
+      [parsed.waxShipmentInvNo]
+    );
+    const existing = duplicate.rows[0];
+    if (existing && !req.body.overwrite && !req.body.newVersion) {
+      return res.status(409).json({
+        error: "An invoice order with this company and order number already exists. Confirm overwrite or create a new version.",
+        code: "DUPLICATE_ORDER",
+        orderId: String(existing.id)
+      });
+    }
+    const versionInfo = existing && req.body.newVersion
+      ? await nextVersionedInvoiceOrderNumber(parsed.waxShipmentInvNo)
+      : { waxShipmentInvNo: parsed.waxShipmentInvNo, version: Number(existing?.upload_version || 1) };
+    const { waxShipmentInvNo, version } = versionInfo;
+    const rows = parsed.rows.map((row) => ({
+      ...row,
+      waxShipmentInvNo: row.waxShipmentInvNo === parsed.waxShipmentInvNo ? waxShipmentInvNo : row.waxShipmentInvNo
+    }));
+    const order = await saveInvoiceOrder(
+      {
+        id: existing && req.body.overwrite ? existing.id : undefined,
+        companyId: company.id,
+        waxShipmentInvNo,
+        originalOrderNumber: parsed.waxShipmentInvNo,
+        uploadVersion: version,
+        invoiceNo: parsed.invoiceNo,
+        dateOfOrder: parsed.dateOfOrder,
+        soNo: parsed.soNo,
+        metalType: parsed.metalType,
+        waxWeight: parsed.waxWeight,
+        castingWeight: parsed.castingWeight,
+        laborCharge: parsed.laborCharge,
+        settingCharge: parsed.settingCharge,
+        stoneCharge: parsed.stoneCharge,
+        extraCharge: parsed.extraCharge,
+        goldValue: parsed.goldValue,
+        silverValue: parsed.silverValue,
+        platinumValue: parsed.platinumValue,
+        status: existing && req.body.overwrite ? "Ready" : "Draft",
+        sourceFileName: path.basename(fileName),
+        rows
+      },
+      req.user
+    );
+    const sourceFilePath = await saveUploadedInvoiceWorkbook(order.id, fileName, workbook);
+    const savedOrder = await setInvoiceOrderSourceFile(order.id, path.basename(fileName), sourceFilePath);
+
+    await insertAudit(req.user, "Invoice order uploaded", {
+      module: "Invoicing",
+      newValue: { orderId: savedOrder.id, fileName, source: parsed.source, overwritten: Boolean(existing && req.body.overwrite), version }
+    });
+    res.status(existing && req.body.overwrite ? 200 : 201).json({ ...savedOrder, upload: parsed.source });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get("/api/invoicing/orders/:id", authRequired, async (req, res, next) => {
   try {
     const order = await fetchInvoiceOrder(req.params.id);
     if (!order) return res.status(404).json({ error: "Invoice order not found." });
     res.json(order);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/invoicing/orders/:id/rows", authRequired, async (req, res, next) => {
+  try {
+    const result = await query("select * from invoice_order_rows where order_id=$1 order by sr_no, created_at", [req.params.id]);
+    res.json(result.rows.map(mapInvoiceLineRow));
   } catch (error) {
     next(error);
   }
@@ -356,9 +450,90 @@ app.put("/api/invoicing/orders/:id", authRequired, async (req, res, next) => {
 
 app.post("/api/invoicing/orders/:id/generate", authRequired, async (req, res, next) => {
   try {
-    const invoice = await generateInvoice(req.params.id, req.body, req.user);
+    const invoice = await generateInvoiceFile(req.params.id, req.body, req.user);
     await insertAudit(req.user, "Invoice generated", { module: "Invoicing", newValue: invoice });
     res.status(201).json(invoice);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/invoicing/orders/:id/generate-invoice", authRequired, async (req, res, next) => {
+  try {
+    const invoice = await generateInvoiceFile(req.params.id, req.body, req.user);
+    await insertAudit(req.user, "Invoice Excel generated", { module: "Invoicing", newValue: invoice });
+    res.status(201).json(invoice);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/invoicing/orders/:id/generate-shipping", authRequired, async (req, res, next) => {
+  try {
+    const shipping = await generateShippingFile(req.params.id, req.body, req.user);
+    await insertAudit(req.user, "Shipping Excel generated", { module: "Invoicing", newValue: shipping });
+    res.status(201).json(shipping);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/invoicing/orders/:id/generate-order-copy", authRequired, async (req, res, next) => {
+  try {
+    const orderCopy = await generateOrderCopyFile(req.params.id, req.body, req.user);
+    await insertAudit(req.user, "Order copy Excel generated", { module: "Invoicing", newValue: orderCopy });
+    res.status(201).json(orderCopy);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/invoicing/orders/:id/download-invoice", authRequired, async (req, res, next) => {
+  try {
+    await sendGeneratedInvoiceFile(req.params.id, "invoice", res);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/invoicing/orders/:id/download-shipping", authRequired, async (req, res, next) => {
+  try {
+    await sendGeneratedInvoiceFile(req.params.id, "shipping", res);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/invoicing/orders/:id/download-order-copy", authRequired, async (req, res, next) => {
+  try {
+    await sendGeneratedInvoiceFile(req.params.id, "order_copy", res);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/invoicing/orders/:id/download-invoice", authRequired, async (req, res, next) => {
+  try {
+    const invoice = await generateInvoiceFile(req.params.id, req.body, req.user);
+    await sendGeneratedInvoiceFile(req.params.id, "invoice", res, invoice.id);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/invoicing/orders/:id/download-shipping", authRequired, async (req, res, next) => {
+  try {
+    const shipping = await generateShippingFile(req.params.id, req.body, req.user);
+    await sendGeneratedInvoiceFile(req.params.id, "shipping", res, shipping.id);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/invoicing/orders/:id/download-order-copy", authRequired, async (req, res, next) => {
+  try {
+    const orderCopy = await generateOrderCopyFile(req.params.id, req.body, req.user);
+    await sendGeneratedInvoiceFile(req.params.id, "order_copy", res, orderCopy.id);
   } catch (error) {
     next(error);
   }
@@ -567,12 +742,24 @@ function mapInvoiceOrderRow(row) {
     companyId: String(row.company_id || ""),
     companyName: row.company_name || "",
     waxShipmentInvNo: row.wax_shipment_inv_no || "",
+    originalOrderNumber: row.original_order_number || "",
+    uploadVersion: row.upload_version || 1,
+    invoiceNo: row.invoice_no || "",
     dateOfOrder: row.date_of_order ? new Date(row.date_of_order).toISOString().slice(0, 10) : "",
     soNo: row.so_no || "",
+    metalType: row.metal_type || "",
+    waxWeight: number(row.wax_weight),
+    castingWeight: number(row.casting_weight),
+    laborCharge: number(row.labor_charge),
+    settingCharge: number(row.setting_charge),
+    stoneCharge: number(row.stone_charge),
+    extraCharge: number(row.extra_charge),
     goldValue: number(row.gold_value),
     silverValue: number(row.silver_value),
     platinumValue: number(row.platinum_value),
     status: row.status || "Draft",
+    sourceFileName: row.source_file_name || "",
+    sourceFilePath: row.source_file_path || "",
     uploadedAt: row.uploaded_at || "",
     updatedAt: row.updated_at || "",
     createdBy: row.created_by || ""
@@ -606,8 +793,13 @@ function mapInvoiceLineRow(row) {
     totalWt: number(row.total_wt),
     requiredMetalPg: number(row.required_metal_pg),
     totalValue: number(row.total_value),
+    waxWeight: number(row.wax_weight),
     castingQty: number(row.casting_qty),
     castingWeight: number(row.casting_weight),
+    laborCharge: number(row.labor_charge),
+    settingCharge: number(row.setting_charge),
+    stoneCharge: number(row.stone_charge),
+    extraCharge: number(row.extra_charge),
     notes: row.notes || "",
     imageUrl: row.image_url || ""
   };
@@ -624,8 +816,12 @@ function mapGeneratedInvoiceRow(row) {
     goldSpot: number(row.gold_spot),
     platinumSpot: number(row.platinum_spot),
     silverSpot: number(row.silver_spot),
-    generatedAt: row.generated_at || "",
-    createdBy: row.created_by || ""
+    fileType: row.file_type || "invoice",
+    filePath: row.file_path || "",
+    generatedAt: row.generated_at || row.created_at || "",
+    createdAt: row.created_at || row.generated_at || "",
+    generatedBy: row.generated_by || row.created_by || "",
+    createdBy: row.created_by || row.generated_by || ""
   };
 }
 
@@ -724,21 +920,40 @@ async function saveInvoiceOrder(input, user) {
     const values = [
       companyId,
       waxShipmentInvNo,
+      String(input.originalOrderNumber || waxShipmentInvNo).trim(),
+      Number.parseInt(input.uploadVersion || 1, 10) || 1,
+      String(input.invoiceNo || "").trim(),
       String(input.dateOfOrder || "").trim() || null,
       String(input.soNo || "").trim(),
+      String(input.metalType || "").trim(),
+      nullableNumber(input.waxWeight),
+      nullableNumber(input.castingWeight),
+      nullableNumber(input.laborCharge),
+      nullableNumber(input.settingCharge),
+      nullableNumber(input.stoneCharge),
+      nullableNumber(input.extraCharge),
       nullableNumber(input.goldValue),
       nullableNumber(input.silverValue),
       nullableNumber(input.platinumValue),
       String(input.status || "Draft").trim() || "Draft",
+      String(input.sourceFileName || "").trim(),
+      String(input.sourceFilePath || "").trim(),
       user.id
     ];
     const orderResult = await client.query(
       input.id
-        ? `update invoice_orders set company_id=$1, wax_shipment_inv_no=$2, date_of_order=$3, so_no=$4, gold_value=$5,
-           silver_value=$6, platinum_value=$7, status=$8, created_by=$9, updated_at=now()
-           where id=$10 returning *`
-        : `insert into invoice_orders (company_id, wax_shipment_inv_no, date_of_order, so_no, gold_value, silver_value, platinum_value, status, created_by)
-           values ($1,$2,$3,$4,$5,$6,$7,$8,$9) returning *`,
+        ? `update invoice_orders set company_id=$1, wax_shipment_inv_no=$2, original_order_number=$3, upload_version=$4,
+           invoice_no=$5, date_of_order=$6, so_no=$7, metal_type=$8, wax_weight=$9, casting_weight=$10,
+           labor_charge=$11, setting_charge=$12, stone_charge=$13, extra_charge=$14, gold_value=$15,
+           silver_value=$16, platinum_value=$17, status=$18, source_file_name=coalesce(nullif($19, ''), source_file_name),
+           source_file_path=coalesce(nullif($20, ''), source_file_path),
+           created_by=$21, updated_at=now()
+           where id=$22 returning *`
+        : `insert into invoice_orders (
+           company_id, wax_shipment_inv_no, original_order_number, upload_version, invoice_no, date_of_order, so_no,
+           metal_type, wax_weight, casting_weight, labor_charge, setting_charge, stone_charge, extra_charge,
+           gold_value, silver_value, platinum_value, status, source_file_name, source_file_path, created_by
+          ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21) returning *`,
       input.id ? [...values, input.id] : values
     );
     const order = orderResult.rows[0];
@@ -751,8 +966,9 @@ async function saveInvoiceOrder(input, user) {
         `insert into invoice_order_rows (
           order_id, sr_no, wax_shipment_inv_no, tree_no, vpo_po_no, product_category, sku, customer_sku,
           wax_qty, order_qty, kt, color, net_wt_pc, gross_wt_pc, total_wt, required_metal_pg,
-          total_value, casting_qty, casting_weight, notes, image_url
-        ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`,
+          total_value, wax_weight, casting_qty, casting_weight, labor_charge, setting_charge, stone_charge,
+          extra_charge, notes, image_url
+        ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)`,
         [
           order.id,
           Number.parseInt(row.srNo || index + 1, 10) || index + 1,
@@ -771,8 +987,13 @@ async function saveInvoiceOrder(input, user) {
           nullableNumber(row.totalWt),
           nullableNumber(row.requiredMetalPg),
           nullableNumber(row.totalValue),
+          nullableNumber(row.waxWeight),
           nullableNumber(row.castingQty),
           nullableNumber(row.castingWeight),
+          nullableNumber(row.laborCharge),
+          nullableNumber(row.settingCharge),
+          nullableNumber(row.stoneCharge),
+          nullableNumber(row.extraCharge),
           row.notes || "",
           row.imageUrl || ""
         ]
@@ -798,6 +1019,186 @@ async function fetchInvoiceOrder(orderId, client = { query }) {
   return mapInvoiceOrderDetail(orderResult.rows[0], lineResult.rows, invoiceResult.rows);
 }
 
+async function searchInvoicing(rawQuery) {
+  const term = String(rawQuery || "").trim();
+  if (!term) return { companies: [], orders: [], rows: [] };
+  const like = `%${term}%`;
+  const [companies, orders, rows] = await Promise.all([
+    query("select * from invoice_companies where name ilike $1 or coalesce(address, '') ilike $1 order by name limit 25", [like]),
+    query(
+      `select o.*, c.name as company_name
+       from invoice_orders o
+       join invoice_companies c on c.id=o.company_id
+       where c.name ilike $1
+          or o.wax_shipment_inv_no ilike $1
+          or coalesce(o.original_order_number, '') ilike $1
+          or coalesce(o.invoice_no, '') ilike $1
+          or coalesce(o.so_no, '') ilike $1
+          or o.order_number::text ilike $1
+       order by o.uploaded_at desc
+       limit 25`,
+      [like]
+    ),
+    query(
+      `select r.*, o.order_number, o.wax_shipment_inv_no as order_wax_shipment_inv_no, c.name as company_name
+       from invoice_order_rows r
+       join invoice_orders o on o.id=r.order_id
+       join invoice_companies c on c.id=o.company_id
+       where coalesce(r.tree_no, '') ilike $1
+          or coalesce(r.vpo_po_no, '') ilike $1
+          or coalesce(r.sku, '') ilike $1
+          or coalesce(r.customer_sku, '') ilike $1
+          or coalesce(r.notes, '') ilike $1
+       order by r.created_at desc
+       limit 50`,
+      [like]
+    )
+  ]);
+  return {
+    companies: companies.rows.map(mapInvoiceCompanyRow),
+    orders: orders.rows.map(mapInvoiceOrderRow),
+    rows: rows.rows.map((row) => ({
+      ...mapInvoiceLineRow(row),
+      orderNumber: row.order_number,
+      orderWaxShipmentInvNo: row.order_wax_shipment_inv_no || "",
+      companyName: row.company_name || ""
+    }))
+  };
+}
+
+async function nextVersionedInvoiceOrderNumber(baseOrderNumber) {
+  const existing = await query(
+    "select coalesce(max(upload_version), 1)::int as version from invoice_orders where original_order_number=$1 or wax_shipment_inv_no=$1",
+    [baseOrderNumber]
+  );
+  let suffix = Number(existing.rows[0]?.version || 1) + 1;
+  let candidate = `${baseOrderNumber}-v${suffix}`;
+  while ((await query("select 1 from invoice_orders where wax_shipment_inv_no=$1 limit 1", [candidate])).rows[0]) {
+    suffix += 1;
+    candidate = `${baseOrderNumber}-v${suffix}`;
+  }
+  return { waxShipmentInvNo: candidate, version: suffix };
+}
+
+async function saveUploadedInvoiceWorkbook(orderId, fileName, buffer) {
+  const uploadDir = path.join(invoiceFileRoot, "uploads");
+  await fsp.mkdir(uploadDir, { recursive: true });
+  const safeName = safeWorkbookFileName(path.basename(fileName || "invoice-order.xlsx"));
+  const filePath = path.join(uploadDir, `${orderId}-${Date.now()}-${safeName}`);
+  await fsp.writeFile(filePath, buffer);
+  return filePath;
+}
+
+async function setInvoiceOrderSourceFile(orderId, fileName, filePath) {
+  await query("update invoice_orders set source_file_name=$1, source_file_path=$2, updated_at=now() where id=$3", [fileName, filePath, orderId]);
+  return fetchInvoiceOrder(orderId);
+}
+
+async function generateInvoiceFile(orderId, input, user) {
+  return generateWorkbookFile(orderId, input, user, "invoice");
+}
+
+async function generateShippingFile(orderId, input, user) {
+  return generateWorkbookFile(orderId, input, user, "shipping");
+}
+
+async function generateWorkbookFile(orderId, input, user, fileType) {
+  const order = await fetchInvoiceOrder(orderId);
+  if (!order) throw Object.assign(new Error("Invoice order not found."), { status: 404 });
+  const payload = normalizeInvoiceDownloadPayload(input, order, fileType === "shipping" ? "Shipping" : "Invoice");
+  const company = invoiceCompanyFromOrder(order);
+  const rows = order.rows || [];
+  const buffer =
+    fileType === "shipping"
+      ? await generateShippingWorkbook({ ...payload, order, company, rows })
+      : await generateInvoiceWorkbook({ ...payload, order, company, rows });
+  const fileName = workbookFileName(fileType === "shipping" ? "Shipping" : "Invoice", payload.invoiceNo, order.companyName);
+  const filePath = await saveGeneratedWorkbookFile(order.id, fileName, buffer);
+  const generated = await insertGeneratedInvoiceRecord(order.id, { ...payload, fileType, filePath, metalType: input.metalType }, user);
+  if (fileType === "invoice") await query("update invoice_orders set status='Invoiced', updated_at=now() where id=$1", [order.id]);
+  return generated;
+}
+
+async function generateOrderCopyFile(orderId, input, user) {
+  const order = await fetchInvoiceOrder(orderId);
+  if (!order) throw Object.assign(new Error("Invoice order not found."), { status: 404 });
+  const invoiceNo = String(input.invoiceNo || `ORDER-COPY-${order.orderNumber || Date.now()}`).trim();
+  const invoiceDate = String(input.invoiceDate || order.dateOfOrder || new Date().toISOString().slice(0, 10)).slice(0, 10);
+  const company = invoiceCompanyFromOrder(order);
+  const buffer = await generateOrderCopyWorkbook({ order, company, rows: order.rows || [], sourceFilePath: order.sourceFilePath });
+  const fileName = workbookFileName("Order_Copy", invoiceNo, order.companyName);
+  const filePath = await saveGeneratedWorkbookFile(order.id, fileName, buffer);
+  return insertGeneratedInvoiceRecord(order.id, { invoiceNo, invoiceDate, fileType: "order_copy", filePath, metalType: input.metalType || order.metalType }, user);
+}
+
+async function saveGeneratedWorkbookFile(orderId, fileName, buffer) {
+  const generatedDir = path.join(invoiceFileRoot, "generated");
+  await fsp.mkdir(generatedDir, { recursive: true });
+  const filePath = path.join(generatedDir, `${orderId}-${Date.now()}-${safeWorkbookFileName(fileName)}`);
+  await fsp.writeFile(filePath, buffer);
+  return filePath;
+}
+
+async function insertGeneratedInvoiceRecord(orderId, payload, user) {
+  const result = await query(
+    `insert into generated_invoices (
+      order_id, invoice_no, invoice_date, metal_type, labor_rate, gold_spot, platinum_spot, silver_spot,
+      file_type, file_path, generated_by, created_by
+    ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$11) returning *`,
+    [
+      orderId,
+      payload.invoiceNo,
+      payload.invoiceDate || new Date().toISOString().slice(0, 10),
+      String(payload.metalType || "").trim(),
+      nullableNumber(payload.laborRate),
+      nullableNumber(payload.goldSpot),
+      nullableNumber(payload.platinumSpot),
+      nullableNumber(payload.silverSpot),
+      payload.fileType || "invoice",
+      payload.filePath || "",
+      user.id
+    ]
+  );
+  return mapGeneratedInvoiceRow(result.rows[0]);
+}
+
+async function sendGeneratedInvoiceFile(orderId, fileType, res, generatedId = null) {
+  const generated = await fetchGeneratedInvoiceFile(orderId, fileType, generatedId);
+  if (!generated) throw Object.assign(new Error(`No generated ${fileType.replace("_", " ")} file found. Generate it first.`), { status: 404 });
+  if (!generated.file_path || !isPathInside(invoiceFileRoot, generated.file_path) || !fs.existsSync(generated.file_path)) {
+    throw Object.assign(new Error(`Generated ${fileType.replace("_", " ")} file is missing on the server. Generate it again.`), { status: 404 });
+  }
+  const buffer = await fsp.readFile(generated.file_path);
+  const storedName = path.basename(generated.file_path);
+  const downloadName = storedName.replace(new RegExp(`^${escapeRegex(String(orderId))}-\\d+-`), "");
+  sendWorkbook(res, buffer, downloadName || storedName);
+}
+
+async function fetchGeneratedInvoiceFile(orderId, fileType, generatedId = null) {
+  const result = await query(
+    generatedId
+      ? "select * from generated_invoices where id=$1 and order_id=$2 and file_type=$3"
+      : "select * from generated_invoices where order_id=$1 and file_type=$2 order by created_at desc, generated_at desc limit 1",
+    generatedId ? [generatedId, orderId, fileType] : [orderId, fileType]
+  );
+  return result.rows[0] || null;
+}
+
+function safeWorkbookFileName(fileName) {
+  const ext = path.extname(fileName || ".xlsx") || ".xlsx";
+  const base = path.basename(fileName || "workbook", ext).replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 120) || "workbook";
+  return `${base}${ext.toLowerCase() === ".xlsx" ? ".xlsx" : ext}`;
+}
+
+function isPathInside(rootPath, filePath) {
+  const relative = path.relative(rootPath, filePath);
+  return Boolean(relative) && !relative.startsWith("..") && !path.isAbsolute(relative);
+}
+
+function escapeRegex(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 async function generateInvoice(orderId, input, user) {
   const invoiceNo = String(input.invoiceNo || `INV-${Date.now()}`).trim();
   const result = await query(
@@ -817,6 +1218,34 @@ async function generateInvoice(orderId, input, user) {
   );
   await query("update invoice_orders set status='Invoiced', updated_at=now() where id=$1", [orderId]);
   return mapGeneratedInvoiceRow(result.rows[0]);
+}
+
+function normalizeInvoiceDownloadPayload(input = {}, order, fallbackPrefix) {
+  const invoiceNo = String(input.invoiceNo || `${fallbackPrefix}-${order.orderNumber || Date.now()}`).trim();
+  const invoiceDate = String(input.invoiceDate || order.dateOfOrder || new Date().toISOString().slice(0, 10)).slice(0, 10);
+  const laborRate = nullableNumber(input.laborRate);
+  const goldSpot = nullableNumber(input.goldSpot ?? order.goldValue);
+  const platinumSpot = nullableNumber(input.platinumSpot ?? order.platinumValue);
+  const silverSpot = nullableNumber(input.silverSpot ?? order.silverValue);
+  if (!invoiceNo) throw Object.assign(new Error("Invoice number is required."), { status: 400 });
+  if (!laborRate || !goldSpot || !platinumSpot || !silverSpot) {
+    throw Object.assign(new Error("Labor rate, gold spot, platinum spot, and silver spot are required."), { status: 400 });
+  }
+  return { invoiceNo, invoiceDate, laborRate, goldSpot, platinumSpot, silverSpot };
+}
+
+function invoiceCompanyFromOrder(order) {
+  return {
+    id: order.companyId,
+    name: order.companyName || "Company"
+  };
+}
+
+function sendWorkbook(res, buffer, fileName) {
+  res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+  res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
+  res.setHeader("Content-Length", buffer.length);
+  res.send(buffer);
 }
 
 async function createWaxEntry(input, user) {

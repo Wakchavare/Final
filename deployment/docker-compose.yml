@@ -26,9 +26,12 @@ services:
       JWT_SECRET: ${JWT_SECRET:-temp-change-later-unique-designs-casting-2026-05-24-9b7d4c2f6a8e5d1c}
       JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-8h}
       CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:8080,http://uniquedesignscasting.com,https://uniquedesignscasting.com,http://www.uniquedesignscasting.com,https://www.uniquedesignscasting.com}
+      INVOICE_FILE_ROOT: /app/generated/invoicing
     depends_on:
       postgres:
         condition: service_healthy
+    volumes:
+      - invoice_files:/app/generated
     ports:
       - "3000:3000"
 
@@ -43,3 +46,4 @@ services:
 
 volumes:
   postgres_data:
+  invoice_files:

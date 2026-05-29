@@ -34,6 +34,30 @@
     return data;
   }
 
+  async function downloadRequest(path) {
+    const headers = {};
+    if (authToken) headers.Authorization = `Bearer ${authToken}`;
+
+    const response = await fetch(`${baseUrl}${path}`, {
+      method: "GET",
+      headers
+    });
+
+    if (!response.ok) {
+      if (response.status === 401) setToken("");
+      const data = await response.json().catch(() => ({}));
+      const error = new Error(data.error || data.message || `Download failed: ${response.status}`);
+      error.status = response.status;
+      error.code = data.code;
+      throw error;
+    }
+
+    const blob = await response.blob();
+    const disposition = response.headers.get("Content-Disposition") || "";
+    const match = disposition.match(/filename="?([^"]+)"?/i);
+    return { blob, fileName: match ? match[1] : "download.xlsx" };
+  }
+
   function setToken(token) {
     authToken = token || "";
     if (authToken) {
@@ -194,8 +218,35 @@
     });
   }
 
+  async function uploadInvoiceOrderWorkbook(payload) {
+    return request("/api/invoicing/orders/upload", {
+      method: "POST",
+      body: payload
+    });
+  }
+
   async function generateInvoice(orderId, invoice) {
-    return request(`/api/invoicing/orders/${encodeURIComponent(orderId)}/generate`, { method: "POST", body: invoice });
+    return request(`/api/invoicing/orders/${encodeURIComponent(orderId)}/generate-invoice`, { method: "POST", body: invoice });
+  }
+
+  async function generateShipping(orderId, invoice) {
+    return request(`/api/invoicing/orders/${encodeURIComponent(orderId)}/generate-shipping`, { method: "POST", body: invoice });
+  }
+
+  async function generateOrderCopy(orderId, invoice) {
+    return request(`/api/invoicing/orders/${encodeURIComponent(orderId)}/generate-order-copy`, { method: "POST", body: invoice });
+  }
+
+  async function downloadInvoiceWorkbook(orderId) {
+    return downloadRequest(`/api/invoicing/orders/${encodeURIComponent(orderId)}/download-invoice`);
+  }
+
+  async function downloadShippingWorkbook(orderId) {
+    return downloadRequest(`/api/invoicing/orders/${encodeURIComponent(orderId)}/download-shipping`);
+  }
+
+  async function downloadOrderCopyWorkbook(orderId) {
+    return downloadRequest(`/api/invoicing/orders/${encodeURIComponent(orderId)}/download-order-copy`);
   }
 
   function isConfigured() {
@@ -213,6 +264,9 @@
     createWaxEntryWithNumber,
     deleteRole,
     deleteWaxEntry,
+    downloadInvoiceWorkbook,
+    downloadOrderCopyWorkbook,
+    downloadShippingWorkbook,
     ensureCastingOrderForWaxEntry,
     fetchAuditLogs,
     fetchCastingWorkflows,
@@ -241,7 +295,10 @@
     saveWaxEntry,
     subscribeToRealtimeChanges,
     generateInvoice,
+    generateOrderCopy,
+    generateShipping,
     touchLastLogin: async () => null,
+    uploadInvoiceOrderWorkbook,
     unsubscribeFromRealtimeChanges: () => {}
   };
 

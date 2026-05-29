@@ -99,6 +99,8 @@
           ${renderStatCard("Line Items", state.stats.rows)}
         </div>
 
+        ${renderUploadPanel()}
+
         <div class="invoicing-layout">
           ${renderCompanyPanel()}
           ${renderOrderPanel()}
@@ -107,6 +109,29 @@
         ${renderOrdersTable()}
         ${renderSelectedOrder()}
       </section>
+    `;
+  }
+
+  function renderUploadPanel() {
+    const disabled = can("create") ? "" : "disabled";
+    return `
+      <form class="inventory-form invoicing-card" data-invoice-upload-form>
+        <div class="section-heading">
+          <div>
+            <h2>Upload Purchase Order Excel</h2>
+            <p class="role-status">Saved as invoice order rows</p>
+          </div>
+        </div>
+        <div class="inventory-form-grid">
+          <label class="inventory-form-wide">
+            <span>Excel File</span>
+            <input type="file" accept=".xlsx" data-invoice-upload-file ${disabled} required>
+          </label>
+        </div>
+        <div class="role-actions">
+          <button class="button" type="submit" ${disabled}>Upload Order</button>
+        </div>
+      </form>
     `;
   }
 
@@ -356,6 +381,9 @@
     }
 
     const defaultInvoiceNo = `INV-${String(order.orderNumber || Date.now()).replace(/^ORD-/, "")}`;
+    const company = state.companies.find((item) => item.id === order.companyId) || {};
+    const metal = String(order.metalType || order.rows?.[0]?.kt || "").toLowerCase();
+    const defaultLaborRate = order.laborCharge || (metal.includes("silver") ? company.silverLaborPrice : metal.includes("plat") ? company.platinumLaborPrice : company.goldLaborPrice) || "";
     return `
       <div class="section-heading inventory-ledger-heading">
         <div>
@@ -417,16 +445,21 @@
           <label>
             <span>Metal Type</span>
             <select data-generate-field="metalType" ${can("create") ? "" : "disabled"}>
-              ${["Gold", "Silver", "Platinum"].map((metal) => `<option value="${metal}">${metal}</option>`).join("")}
+              ${["Gold", "Silver", "Platinum"].map((item) => `<option value="${item}" ${String(order.metalType || "").toLowerCase().includes(item.toLowerCase()) ? "selected" : ""}>${item}</option>`).join("")}
             </select>
           </label>
-          ${renderGenerateNumberField("laborRate", "Labor Rate", can("create"))}
-          ${renderGenerateNumberField("goldSpot", "Gold Spot", can("create"))}
-          ${renderGenerateNumberField("platinumSpot", "Platinum Spot", can("create"))}
-          ${renderGenerateNumberField("silverSpot", "Silver Spot", can("create"))}
+          ${renderGenerateNumberField("laborRate", "Labor Rate", can("create"), defaultLaborRate)}
+          ${renderGenerateNumberField("goldSpot", "Gold Spot", can("create"), order.goldValue || "")}
+          ${renderGenerateNumberField("platinumSpot", "Platinum Spot", can("create"), order.platinumValue || "")}
+          ${renderGenerateNumberField("silverSpot", "Silver Spot", can("create"), order.silverValue || "")}
         </div>
         <div class="role-actions">
           <button class="button" type="submit" ${can("create") ? "" : "disabled"}>Generate Invoice</button>
+          <button class="button button-secondary" type="button" data-generate-shipping-excel="${escapeAttribute(order.id)}" ${can("create") ? "" : "disabled"}>Generate Shipping</button>
+          <button class="button button-secondary" type="button" data-generate-order-copy-excel="${escapeAttribute(order.id)}" ${can("create") ? "" : "disabled"}>Generate Order Copy</button>
+          <button class="button button-secondary" type="button" data-download-invoice-excel="${escapeAttribute(order.id)}" ${can("export") ? "" : "disabled"}>Download Invoice Excel</button>
+          <button class="button button-secondary" type="button" data-download-shipping-excel="${escapeAttribute(order.id)}" ${can("export") ? "" : "disabled"}>Download Shipping Excel</button>
+          <button class="button button-secondary" type="button" data-download-order-copy-excel="${escapeAttribute(order.id)}" ${can("export") ? "" : "disabled"}>Download Order Copy</button>
         </div>
       </form>
 
@@ -437,6 +470,7 @@
               <th>Invoice No</th>
               <th>Date</th>
               <th>Metal</th>
+              <th>File Type</th>
               <th>Labor Rate</th>
               <th>Generated At</th>
             </tr>
@@ -451,13 +485,14 @@
                           <td>${escapeHtml(invoice.invoiceNo)}</td>
                           <td>${escapeHtml(invoice.invoiceDate)}</td>
                           <td>${escapeHtml(invoice.metalType)}</td>
+                          <td>${escapeHtml(invoice.fileType)}</td>
                           <td>${escapeHtml(formatMoney(invoice.laborRate))}</td>
                           <td>${escapeHtml(formatDateTime(invoice.generatedAt))}</td>
                         </tr>
                       `
                     )
                     .join("")
-                : '<tr><td colspan="5" class="audit-empty">No generated invoices yet.</td></tr>'
+                : '<tr><td colspan="6" class="audit-empty">No generated invoices yet.</td></tr>'
             }
           </tbody>
         </table>
@@ -465,11 +500,11 @@
     `;
   }
 
-  function renderGenerateNumberField(field, label, enabled) {
+  function renderGenerateNumberField(field, label, enabled, value = "") {
     return `
       <label>
         <span>${escapeHtml(label)}</span>
-        <input type="number" min="0" step="0.01" data-generate-field="${escapeAttribute(field)}" ${enabled ? "" : "disabled"}>
+        <input type="number" min="0" step="0.01" data-generate-field="${escapeAttribute(field)}" value="${escapeAttribute(value)}" ${enabled ? "" : "disabled"}>
       </label>
     `;
   }
@@ -499,23 +534,87 @@
     await refresh({ keepSelected: true });
   }
 
+  async function handleUploadSubmit(form) {
+    const file = form.querySelector("[data-invoice-upload-file]")?.files?.[0];
+    if (!file) {
+      setMessage("Select an Excel file to upload.");
+      return;
+    }
+    if (!/\.xlsx$/i.test(file.name)) {
+      setMessage("Only .xlsx Excel files can be uploaded.");
+      return;
+    }
+    const fileBase64 = await fileToBase64(file);
+    let order;
+    try {
+      order = await Backend.uploadInvoiceOrderWorkbook({ fileName: file.name, fileBase64 });
+    } catch (error) {
+      if (error.code !== "DUPLICATE_ORDER") throw error;
+      const overwrite = window.confirm("This company and order number already exist. Overwrite the saved order?");
+      if (overwrite) {
+        order = await Backend.uploadInvoiceOrderWorkbook({ fileName: file.name, fileBase64, overwrite: true });
+      } else {
+        const newVersion = window.confirm("Create a new version instead?");
+        if (!newVersion) throw error;
+        order = await Backend.uploadInvoiceOrderWorkbook({ fileName: file.name, fileBase64, newVersion: true });
+      }
+    }
+    state.selectedOrder = order;
+    state.editingOrder = null;
+    setMessage(`Uploaded ${order.rows?.length || 0} invoice line items from ${file.name}.`);
+    form.reset();
+    await refresh({ keepSelected: true });
+  }
+
   async function handleGenerateSubmit(form) {
     const orderId = form.dataset.orderId;
     const payload = readFields(form, "[data-generate-field]");
     await Backend.generateInvoice(orderId, payload);
     state.selectedOrder = await Backend.fetchInvoiceOrder(orderId);
-    setMessage("Invoice generated and stored in PostgreSQL.");
+    setMessage("Invoice Excel generated from PostgreSQL data.");
     await refresh({ keepSelected: true });
+  }
+
+  async function handleGenerateWorkbook(orderId, type) {
+    const form = document.querySelector(`[data-generate-invoice-form][data-order-id="${cssEscape(orderId)}"]`);
+    const payload = form ? readFields(form, "[data-generate-field]") : {};
+    if (type === "shipping") {
+      await Backend.generateShipping(orderId, payload);
+      setMessage("Shipping Excel generated from PostgreSQL data.");
+    } else {
+      await Backend.generateOrderCopy(orderId, payload);
+      setMessage("Order copy Excel generated from PostgreSQL data.");
+    }
+    state.selectedOrder = await Backend.fetchInvoiceOrder(orderId);
+    await refresh({ keepSelected: true });
+  }
+
+  async function handleWorkbookDownload(orderId, type) {
+    const result =
+      type === "shipping"
+        ? await Backend.downloadShippingWorkbook(orderId)
+        : type === "orderCopy"
+          ? await Backend.downloadOrderCopyWorkbook(orderId)
+          : await Backend.downloadInvoiceWorkbook(orderId);
+    downloadBlob(result.blob, result.fileName);
+    setMessage(`${type === "shipping" ? "Shipping" : type === "orderCopy" ? "Order copy" : "Invoice"} Excel downloaded.`);
   }
 
   document.addEventListener("submit", (event) => {
     const companyForm = event.target.closest("[data-invoice-company-form]");
     const orderForm = event.target.closest("[data-invoice-order-form]");
+    const uploadForm = event.target.closest("[data-invoice-upload-form]");
     const generateForm = event.target.closest("[data-generate-invoice-form]");
-    if (!companyForm && !orderForm && !generateForm) return;
+    if (!companyForm && !orderForm && !uploadForm && !generateForm) return;
 
     event.preventDefault();
-    const run = companyForm ? handleCompanySubmit(companyForm) : orderForm ? handleOrderSubmit(orderForm) : handleGenerateSubmit(generateForm);
+    const run = companyForm
+      ? handleCompanySubmit(companyForm)
+      : orderForm
+        ? handleOrderSubmit(orderForm)
+        : uploadForm
+          ? handleUploadSubmit(uploadForm)
+          : handleGenerateSubmit(generateForm);
     run.catch((error) => {
       console.warn("Invoicing action failed.", error);
       setMessage(error.message || "Invoicing action failed.");
@@ -529,6 +628,11 @@
     const newOrderButton = event.target.closest("[data-new-invoice-order]");
     const editOrderButton = event.target.closest("[data-edit-invoice-order]");
     const viewOrderButton = event.target.closest("[data-view-invoice-order]");
+    const generateShippingButton = event.target.closest("[data-generate-shipping-excel]");
+    const generateOrderCopyButton = event.target.closest("[data-generate-order-copy-excel]");
+    const downloadInvoiceButton = event.target.closest("[data-download-invoice-excel]");
+    const downloadShippingButton = event.target.closest("[data-download-shipping-excel]");
+    const downloadOrderCopyButton = event.target.closest("[data-download-order-copy-excel]");
 
     if (refreshButton) {
       refresh({ keepSelected: true });
@@ -571,8 +675,60 @@
           render();
         })
         .catch((error) => setMessage(error.message || "Could not load order."));
+      return;
+    }
+
+    if (generateShippingButton) {
+      handleGenerateWorkbook(generateShippingButton.dataset.generateShippingExcel, "shipping").catch((error) => {
+        console.warn("Shipping Excel generation failed.", error);
+        setMessage(error.message || "Shipping Excel generation failed.");
+      });
+      return;
+    }
+
+    if (generateOrderCopyButton) {
+      handleGenerateWorkbook(generateOrderCopyButton.dataset.generateOrderCopyExcel, "orderCopy").catch((error) => {
+        console.warn("Order copy generation failed.", error);
+        setMessage(error.message || "Order copy generation failed.");
+      });
+      return;
+    }
+
+    if (downloadInvoiceButton) {
+      handleWorkbookDownload(downloadInvoiceButton.dataset.downloadInvoiceExcel, "invoice").catch((error) => {
+        console.warn("Invoice Excel download failed.", error);
+        setMessage(error.message || "Invoice Excel download failed.");
+      });
+      return;
+    }
+
+    if (downloadShippingButton) {
+      handleWorkbookDownload(downloadShippingButton.dataset.downloadShippingExcel, "shipping").catch((error) => {
+        console.warn("Shipping Excel download failed.", error);
+        setMessage(error.message || "Shipping Excel download failed.");
+      });
+      return;
+    }
+
+    if (downloadOrderCopyButton) {
+      handleWorkbookDownload(downloadOrderCopyButton.dataset.downloadOrderCopyExcel, "orderCopy").catch((error) => {
+        console.warn("Order copy download failed.", error);
+        setMessage(error.message || "Order copy download failed.");
+      });
     }
   });
+
+  function fileToBase64(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = String(reader.result || "");
+        resolve(result.includes(",") ? result.split(",").pop() : result);
+      };
+      reader.onerror = () => reject(new Error("Could not read the selected Excel file."));
+      reader.readAsDataURL(file);
+    });
+  }
 
   function formatMoney(value) {
     const parsed = Number.parseFloat(value);
@@ -601,6 +757,22 @@
 
   function escapeAttribute(value) {
     return escapeHtml(value).replace(/`/g, "&#96;");
+  }
+
+  function cssEscape(value) {
+    if (window.CSS?.escape) return window.CSS.escape(String(value));
+    return String(value).replace(/["\\]/g, "\\$&");
+  }
+
+  function downloadBlob(blob, fileName) {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = fileName || "invoice.xlsx";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
   }
 
   window.ProductionInvoicing = {

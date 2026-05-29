@@ -1,6 +1,8 @@
 process.env.NODE_ENV = "test";
 process.env.JWT_SECRET = process.env.JWT_SECRET || "test-secret";
 
+const fs = require("node:fs");
+const path = require("node:path");
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const request = require("supertest");
@@ -72,6 +74,32 @@ test("API supports the production workflow", async () => {
   assert.equal(invoiceSummary.body.stats.companies >= 1, true);
   assert.equal(invoiceSummary.body.stats.orders >= 1, true);
 
+  const fixturePath = path.join(__dirname, "fixtures", "batch-15-vpo-988-10k.xlsx");
+  const uploadedOrder = await request(app)
+    .post("/api/invoicing/orders/upload")
+    .set("Authorization", `Bearer ${token}`)
+    .send({
+      fileName: "Batch 15 Purchase Order VPO 988 - 10K .xlsx",
+      fileBase64: fs.readFileSync(fixturePath).toString("base64")
+    })
+    .expect(201);
+  assert.equal(uploadedOrder.body.companyName, "ShineBright USA, INC.");
+  assert.equal(uploadedOrder.body.waxShipmentInvNo, "VPO-988");
+  assert.equal(uploadedOrder.body.dateOfOrder, "2026-05-15");
+  assert.equal(uploadedOrder.body.rows.length, 4);
+  assert.equal(uploadedOrder.body.rows[0].customerSku, "WAXSBPR100Y10");
+  assert.equal(uploadedOrder.body.rows[0].kt, "10KT");
+  assert.equal(uploadedOrder.body.upload.fallbackWaxShipmentInvNo, true);
+
+  await request(app)
+    .post("/api/invoicing/orders/upload")
+    .set("Authorization", `Bearer ${token}`)
+    .send({
+      fileName: "Batch 15 Purchase Order VPO 988 - 10K .xlsx",
+      fileBase64: fs.readFileSync(fixturePath).toString("base64")
+    })
+    .expect(409);
+
   const invoiceCompany = await request(app)
     .post("/api/invoicing/companies")
     .set("Authorization", `Bearer ${token}`)
@@ -126,18 +154,79 @@ test("API supports the production workflow", async () => {
     .expect(200);
   assert.equal(invoiceOrderDetail.body.rows[0].sku, "UD-TEST-14Y");
 
+  const invoiceOrderRows = await request(app)
+    .get(`/api/invoicing/orders/${invoiceOrder.body.id}/rows`)
+    .set("Authorization", `Bearer ${token}`)
+    .expect(200);
+  assert.equal(invoiceOrderRows.body.length, 1);
+
   const generatedInvoice = await request(app)
-    .post(`/api/invoicing/orders/${invoiceOrder.body.id}/generate`)
+    .post(`/api/invoicing/orders/${invoiceOrder.body.id}/generate-invoice`)
     .set("Authorization", `Bearer ${token}`)
     .send({
       invoiceNo: "INV-TEST-001",
       invoiceDate: "2026-05-13",
       metalType: "Gold",
       laborRate: "18.50",
-      goldSpot: "2340.00"
+      goldSpot: "2340.00",
+      platinumSpot: "980.00",
+      silverSpot: "30.00"
     })
     .expect(201);
   assert.equal(generatedInvoice.body.invoiceNo, "INV-TEST-001");
+  assert.equal(generatedInvoice.body.fileType, "invoice");
+
+  const downloadPayload = {
+    invoiceNo: "INV-TEST-001",
+    invoiceDate: "2026-05-13",
+    laborRate: "18.50",
+    goldSpot: "2340.00",
+    platinumSpot: "980.00",
+    silverSpot: "30.00"
+  };
+  const generatedShipping = await request(app)
+    .post(`/api/invoicing/orders/${invoiceOrder.body.id}/generate-shipping`)
+    .set("Authorization", `Bearer ${token}`)
+    .send(downloadPayload)
+    .expect(201);
+  assert.equal(generatedShipping.body.fileType, "shipping");
+
+  const generatedOrderCopy = await request(app)
+    .post(`/api/invoicing/orders/${invoiceOrder.body.id}/generate-order-copy`)
+    .set("Authorization", `Bearer ${token}`)
+    .send({ invoiceNo: "COPY-TEST-001", invoiceDate: "2026-05-13" })
+    .expect(201);
+  assert.equal(generatedOrderCopy.body.fileType, "order_copy");
+
+  const invoiceWorkbook = await request(app)
+    .get(`/api/invoicing/orders/${invoiceOrder.body.id}/download-invoice`)
+    .set("Authorization", `Bearer ${token}`)
+    .buffer(true)
+    .parse(binaryParser)
+    .expect(200);
+  assert.match(invoiceWorkbook.headers["content-type"], /spreadsheetml\.sheet/);
+  assert.equal(invoiceWorkbook.body.slice(0, 2).toString(), "PK");
+
+  const shippingWorkbook = await request(app)
+    .get(`/api/invoicing/orders/${invoiceOrder.body.id}/download-shipping`)
+    .set("Authorization", `Bearer ${token}`)
+    .buffer(true)
+    .parse(binaryParser)
+    .expect(200);
+  assert.match(shippingWorkbook.headers["content-type"], /spreadsheetml\.sheet/);
+  assert.equal(shippingWorkbook.body.slice(0, 2).toString(), "PK");
+
+  const orderCopyWorkbook = await request(app)
+    .get(`/api/invoicing/orders/${invoiceOrder.body.id}/download-order-copy`)
+    .set("Authorization", `Bearer ${token}`)
+    .buffer(true)
+    .parse(binaryParser)
+    .expect(200);
+  assert.match(orderCopyWorkbook.headers["content-type"], /spreadsheetml\.sheet/);
+  assert.equal(orderCopyWorkbook.body.slice(0, 2).toString(), "PK");
+
+  const search = await request(app).get("/api/invoicing/search?q=UD-TEST").set("Authorization", `Bearer ${token}`).expect(200);
+  assert.equal(search.body.rows.length >= 1, true);
 
   await request(app).get("/api/audit-logs").set("Authorization", `Bearer ${token}`).expect(200);
 });
@@ -145,3 +234,9 @@ test("API supports the production workflow", async () => {
 test.after(async () => {
   await pool.end();
 });
+
+function binaryParser(res, callback) {
+  const chunks = [];
+  res.on("data", (chunk) => chunks.push(chunk));
+  res.on("end", () => callback(null, Buffer.concat(chunks)));
+}
